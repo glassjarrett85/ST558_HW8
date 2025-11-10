@@ -1,0 +1,157 @@
+---
+title: "ST558 Assignment 08"
+author: "Jarrett Glass"
+format: html
+---
+
+### Read in the Data
+
+```{r}
+#| warning: FALSE
+#| message: FALSE
+
+library(tidyverse)
+
+df <- readr::read_csv("SeoulBikeData.csv", locale=locale(encoding="Windows-1252"), 
+                      show_col_types=FALSE)
+```
+
+### Exploratory Data Analysis
+
+The following steps will be taken to explore this data set:
+
+1. Check for "missingness" - in this case, just provide a count of how many missing values there are per variable.
+
+```{r}
+df |> 
+  summarize(across(everything(), ~sum(is.na(.))))
+```
+
+  There are no missing values, aparently, for any variable in this data set.
+
+2. check the column types and values within columns to make sure they make sense -- e.g., should a column be numeric but contains categories?
+
+```{r}
+str(df)
+```
+
+  The only column that is "mismatched" between contents and Type is the Date column, which will be changed next:
+
+3. Convert `Date` into an actual Date if applicable.
+
+4. Turn character variables `Seasons`, `Holiday`, and `Functioning Day` into factors.
+
+5. Rename all variables to have easy-to-use names.
+
+```{r}
+# Perform actions for steps 3, 4, and 5 at once:
+df <- df |>
+  mutate(Date=as.Date(Date, "%d/%m/%Y"),
+         across(c(Seasons, Holiday, `Functioning Day`), factor)) |>
+  janitor::clean_names()
+```
+
+6. Create summary statistics related to the bike rental count. Subset the data especially on the `Functioning Day` variable.
+
+```{r}
+# Summary statistics on bike rental account.
+df |> 
+  summarize(mean=mean(rented_bike_count), 
+            median=median(rented_bike_count), 
+            sd=sd(rented_bike_count))
+
+# Summarize on: Seasons
+df |> 
+  group_by(seasons) |>
+  summarize(mean=mean(rented_bike_count), 
+            median=median(rented_bike_count), 
+            sd=sd(rented_bike_count))
+
+# Summarize on: Holiday
+df |>
+  group_by(holiday) |>
+  summarize(mean=mean(rented_bike_count), 
+            median=median(rented_bike_count), 
+            sd=sd(rented_bike_count))
+
+# Summarize on: Functioning Day
+df |>
+  group_by(functioning_day) |>
+  summarize(mean=mean(rented_bike_count), 
+            median=median(rented_bike_count), 
+            sd=sd(rented_bike_count))
+```
+
+When variable `functioning_day='No'`, there are no bike rentals occuring. Data will be subset to only show for functioning days.
+
+```{r}
+df <- df |> 
+  filter(functioning_day == "Yes")
+```
+
+7. Summarize across the hours so each day only has one observation associated with it.
+
++ For example, `group_by(date, seasons, holiday)` variables; and obtain the sums of the `bike_count`, `rainfall`, and `snowfall` variables.
+
++ Find the mean of all weather-related variables.
+
+```{r}
+# Obtain the sums of `rented_bike_count`, `rainfall`, and `snowfall` for each date.
+# additionally -- the mean of any "weather-related" variables. Which is essentially all the numeric variables we aren't grouping by.
+
+data <- df |> 
+  group_by(date, seasons, holiday) |>
+  summarize(across(c(rented_bike_count, rainfall_mm, snowfall_cm), list(sum=sum), .names="{.col}_{.fn}"),
+            across(where(is.numeric) & !ends_with("sum"), list(mean=mean), .names="{.col}_{.fn}"), 
+            .groups="keep") |>
+  select(-rented_bike_count_mean, -hour_mean) # Remove the specific unnecessary columns.
+data
+```
+
+8. Recreate basic summary stats and then create some plots to explore relationships. Report correlation between the numeric variables as well.
+
+This table provides the average details *per day*. The summary statistics of **bike rentals** for this subset are:
+
+```{r}
+df |> 
+  group_by(seasons, holiday) |>
+  summarize(mean=mean(rented_bike_count), median=median(rented_bike_count), sd=sd(rented_bike_count), .groups="keep")
+```
+
+### Splitting the Data
+
+Using functions from `tidymodels` to create a `75/25` training/test data split. Use the `strata` argument to stratify split on `seasons`.
+
++ On the TRAINING set, create 10-fold CV split.
+
+### Fitting MLR Models
+
+#### For the 1st recipe:
+
+* Ignore the Date variable for modeling, but use it to create a weekday/weekend (factor) variable.
+
+* Standardize the numeric variables since their scales are pretty different.
+
+* Create dummy variables for the seasons, holiday, and our new day type variable
+
+#### For the 2nd recipe:
+
+* Do the same steps as above.
+
+* Add in interactions between seasons and holiday, seasons and temp, temp and rainfall. For the seasons interactions, you can use starts_with() to create the proper interactions.
+
+#### For the 3rd recipe:
+
+* Do the same as the 2nd recipe.
+
+* Add in quadratic terms for each numeric predictor
+
+#### Establish linear model fit to use the “lm” engine.
+
+Fit the models using 10 fold CV via fit_resamples() and consider the training set CV error to choose a best model.
+
+Using your ‘best’ model, fit the model to the entire training data set (use the last_fit() function).
+
+* Compute the RMSE metric on the test set.
+
+* Obtain the final model (fit on the entire training set) coefficient table using extract_fit_parsnip() and tidy().
