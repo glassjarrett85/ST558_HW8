@@ -12,7 +12,8 @@ format: html
 
 library(tidyverse)
 
-df <- readr::read_csv("SeoulBikeData.csv", locale=locale(encoding="Windows-1252"), 
+df <- readr::read_csv("SeoulBikeData.csv",
+                      locale = locale(encoding = "ISO-8859-1"),
                       show_col_types=FALSE)
 ```
 
@@ -27,7 +28,7 @@ df |>
   summarize(across(everything(), ~sum(is.na(.))))
 ```
 
-  There are no missing values, aparently, for any variable in this data set.
+  There are no missing values, apparently, for any variable in this data set.
 
 2. check the column types and values within columns to make sure they make sense -- e.g., should a column be numeric but contains categories?
 
@@ -82,7 +83,7 @@ df |>
             sd=sd(rented_bike_count))
 ```
 
-When variable `functioning_day='No'`, there are no bike rentals occuring. Data will be subset to only show for functioning days.
+When variable `functioning_day='No'`, there are no bike rentals occurring. Data will be subset to only show for functioning days.
 
 ```{r}
 df <- df |> 
@@ -124,6 +125,16 @@ Using functions from `tidymodels` to create a `75/25` training/test data split. 
 
 + On the TRAINING set, create 10-fold CV split.
 
+```{r}
+library(tidymodels)
+
+bike_split <- initial_split(data=df, prop=0.75, strata=seasons)
+bike_train <- training(bike_split)
+bike_test <- testing(bike_split)
+
+bike_train_10fold <- vfold_cv(bike_train, 10)
+```
+
 ### Fitting MLR Models
 
 #### For the 1st recipe:
@@ -134,17 +145,54 @@ Using functions from `tidymodels` to create a `75/25` training/test data split. 
 
 * Create dummy variables for the seasons, holiday, and our new day type variable
 
+```{r}
+recipe.1 <- recipe(rented_bike_count ~ ., data=bike_train) |>
+  step_date(date, features="dow") |>
+  step_mutate(daytype = factor(if_else(date_dow %in% c("Sat", "Sun"), "Weekend", "Weekday"))) |>
+  step_normalize(all_numeric()) |>
+  step_dummy(seasons, holiday, daytype) |>
+  step_rm(date_dow)
+recipe.1
+```
+
 #### For the 2nd recipe:
 
 * Do the same steps as above.
 
 * Add in interactions between seasons and holiday, seasons and temp, temp and rainfall. For the seasons interactions, you can use starts_with() to create the proper interactions.
 
+```{r}
+recipe.2 <- recipe(rented_bike_count ~ ., data=bike_train) |>
+  step_date(date, features="dow") |>
+  step_mutate(daytype = factor(if_else(date_dow %in% c("Sat", "Sun"), "Weekend", "Weekday"))) |>
+  step_normalize(all_numeric()) |>
+  step_dummy(seasons, holiday, daytype) |>
+  step_rm(date_dow) |>
+  step_interact(
+    terms=~holiday_No.Holiday:starts_with("seasons_") + temperature_c:starts_with("seasons_") + temperature_c:rainfall_mm
+  )
+recipe.2
+```
+
 #### For the 3rd recipe:
 
 * Do the same as the 2nd recipe.
 
 * Add in quadratic terms for each numeric predictor
+
+```{r}
+recipe.3 <- recipe(rented_bike_count ~ ., data=bike_train) |>
+  step_date(date, features="dow") |>
+  step_mutate(daytype = factor(if_else(date_dow %in% c("Sat", "Sun"), "Weekend", "Weekday"))) |>
+  step_normalize(all_numeric()) |>
+  step_poly(all_numeric(), degree=2, raw=TRUE) |>
+  step_dummy(seasons, holiday, daytype) |>
+  step_rm(date_dow) |>
+  step_interact(
+    terms=~holiday_No.Holiday:starts_with("seasons_") + temperature_c:starts_with("seasons_") + temperature_c:rainfall_mm
+  )
+recipe.3
+```
 
 #### Establish linear model fit to use the “lm” engine.
 
