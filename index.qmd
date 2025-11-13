@@ -50,6 +50,7 @@ df <- df |>
   mutate(Date=as.Date(Date, "%d/%m/%Y"),
          across(c(Seasons, Holiday, `Functioning Day`), factor)) |>
   janitor::clean_names()
+df
 ```
 
 6. Create summary statistics related to the bike rental count. Subset the data especially on the `Functioning Day` variable.
@@ -114,9 +115,9 @@ data
 This table provides the average details *per day*. The summary statistics of **bike rentals** for this subset are:
 
 ```{r}
-df |> 
+data |> 
   group_by(seasons, holiday) |>
-  summarize(mean=mean(rented_bike_count), median=median(rented_bike_count), sd=sd(rented_bike_count), .groups="keep")
+  summarize(mean=mean(rented_bike_count_sum), median=median(rented_bike_count_sum), sd=sd(rented_bike_count_sum), .groups="keep")
 ```
 
 ### Splitting the Data
@@ -128,11 +129,9 @@ Using functions from `tidymodels` to create a `75/25` training/test data split. 
 ```{r}
 library(tidymodels)
 
-bike_split <- initial_split(data=df, prop=0.75, strata=seasons)
+bike_split <- initial_split(data=data, prop=0.75, strata=seasons)
 bike_train <- training(bike_split)
 bike_test <- testing(bike_split)
-
-bike_train_10fold <- vfold_cv(bike_train, 10)
 ```
 
 ### Fitting MLR Models
@@ -146,7 +145,7 @@ bike_train_10fold <- vfold_cv(bike_train, 10)
 * Create dummy variables for the seasons, holiday, and our new day type variable
 
 ```{r}
-recipe.1 <- recipe(rented_bike_count ~ ., data=bike_train) |>
+recipe.1 <- recipe(rented_bike_count_sum ~ ., data=bike_train) |>
   step_date(date, features="dow") |>
   step_mutate(daytype = factor(if_else(date_dow %in% c("Sat", "Sun"), "Weekend", "Weekday"))) |>
   step_normalize(all_numeric()) |>
@@ -162,15 +161,16 @@ recipe.1
 * Add in interactions between seasons and holiday, seasons and temp, temp and rainfall. For the seasons interactions, you can use starts_with() to create the proper interactions.
 
 ```{r}
-recipe.2 <- recipe(rented_bike_count ~ ., data=bike_train) |>
+recipe.2 <- recipe(rented_bike_count_sum ~ ., data=bike_train) |>
   step_date(date, features="dow") |>
   step_mutate(daytype = factor(if_else(date_dow %in% c("Sat", "Sun"), "Weekend", "Weekday"))) |>
   step_normalize(all_numeric()) |>
   step_dummy(seasons, holiday, daytype) |>
   step_rm(date_dow) |>
-  step_interact(
-    terms=~holiday_No.Holiday:starts_with("seasons_") + temperature_c:starts_with("seasons_") + temperature_c:rainfall_mm
-  )
+  step_interact(terms = ~ holiday_No.Holiday:starts_with("seasons_")) |>
+  step_interact(terms = ~ temperature_c_mean:starts_with("seasons_")) |>
+  step_interact(terms = ~ temperature_c_mean:rainfall_mm_mean)
+
 recipe.2
 ```
 
@@ -181,16 +181,17 @@ recipe.2
 * Add in quadratic terms for each numeric predictor
 
 ```{r}
-recipe.3 <- recipe(rented_bike_count ~ ., data=bike_train) |>
+recipe.3 <- recipe(rented_bike_count_sum ~ ., data=bike_train) |>
+  step_poly(all_numeric_predictors(), keep_original_cols = TRUE) |>
   step_date(date, features="dow") |>
   step_mutate(daytype = factor(if_else(date_dow %in% c("Sat", "Sun"), "Weekend", "Weekday"))) |>
   step_normalize(all_numeric()) |>
-  step_poly(all_numeric(), degree=2, raw=TRUE) |>
-  step_dummy(seasons, holiday, daytype) |>
   step_rm(date_dow) |>
-  step_interact(
-    terms=~holiday_No.Holiday:starts_with("seasons_") + temperature_c:starts_with("seasons_") + temperature_c:rainfall_mm
-  )
+  step_dummy(seasons, holiday, daytype) |>
+  step_interact(terms = ~ holiday_No.Holiday:starts_with("seasons_")) |>
+  step_interact(terms = ~ temperature_c_mean:starts_with("seasons_")) |>
+  step_interact(terms = ~ temperature_c_mean:rainfall_mm_mean)
+
 recipe.3
 ```
 
@@ -198,8 +199,65 @@ recipe.3
 
 Fit the models using 10 fold CV via fit_resamples() and consider the training set CV error to choose a best model.
 
-Using your ‘best’ model, fit the model to the entire training data set (use the last_fit() function).
+```{r}
+#| warning: FALSE
 
-* Compute the RMSE metric on the test set.
+# Establish the MLR using "lm" engine.
+bike_mlr <- linear_reg() |>
+  set_engine("lm")
 
-* Obtain the final model (fit on the entire training set) coefficient table using extract_fit_parsnip() and tidy().
+# Creation of the workflow using Recipe 1
+rec1_wfl <- workflow() |>
+  add_recipe(recipe.1) |>
+  add_model(bike_mlr)
+rec1_wfl
+
+# Create a 10-fold CV Split to be used for each test
+bike_train_10fold <- vfold_cv(bike_train, 10)
+
+# And using our 10-fold CV training set on this workflow.
+rec1_cvFits <- rec1_wfl |>
+  fit_resamples(bike_train_10fold)
+rec1_cvFits |> collect_metrics()
+
+# Repeat the same tasks for Recipes 2 and 3
+rec2_wfl <- workflow() |>
+  add_recipe(recipe.2) |>
+  add_model(bike_mlr)
+rec2_wfl
+rec2_cvFits <- rec2_wfl |>
+  fit_resamples(bike_train_10fold)
+rec2_cvFits |> collect_metrics()
+
+
+rec3_wfl <- workflow() |>
+  add_recipe(recipe.3) |>
+  add_model(bike_mlr)
+rec3_wfl
+rec3_cvFits <- rec3_wfl |>
+  fit_resamples(bike_train_10fold)
+rec3_cvFits |> collect_metrics()
+```
+
+For these three models, the model with the lowest RMSE is Model 3, which includes the quadratic terms. Utilizing this model on the entire training set,
+
+```{r}
+full_training <- rec3_wfl |> 
+  last_fit(split=bike_split)
+full_training
+```
+
+Compute the RMSE metric on the test set:
+
+```{r}
+full_training |> collect_metrics()
+```
+
+The final coefficient table can be obtained using extract_fit_parsnip() and tidy().
+
+```{r}
+coef_table <- full_training |>
+  extract_fit_parsnip() |>
+  tidy()
+coef_table
+```
